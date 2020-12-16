@@ -1,22 +1,15 @@
----
-title: "Using Sequence with Broker and Trigger"
-linkTitle: "Using with Broker and Trigger"
-weight: 20
-type: "docs"
----
-
 We are going to create the following logical configuration. We create a
-CronJobSource, feeding events into the Broker, then we create a `Filter` that
-wires those events into a [`Sequence`](../../../sequence.md) consisting of 3
+PingSource, feeding events into the Broker, then we create a `Filter` that wires
+those events into a [`Sequence`](../../../flows/sequence.md) consisting of 3
 steps. Then we take the end of the Sequence and feed newly minted events back
 into the Broker and create another Trigger which will then display those events.
 
 ## Prerequisites
 
-For this example, we'll assume you have set up a `Broker` and an
-`InMemoryChannel` as well as Knative Serving (for our functions). The examples
-use `default` namespace, again, if your broker lives in another Namespace, you
-will need to modify the examples to reflect this.
+- Knative Serving
+- `InMemoryChannel`
+
+**NOTE:** The examples use the `default` namespace.
 
 If you want to use different type of `Channel`, you will have to modify the
 `Sequence.Spec.ChannelTemplate` to create the appropriate Channel resources.
@@ -28,10 +21,20 @@ The functions used in these examples live in
 
 ## Setup
 
-### Create the Knative Services
+### Creating the Broker
 
-Change `default` below to create the steps in the Namespace where you have
-configured your `Broker`
+To create the cluster default Broker type:
+
+```shell
+kubectl create -f - <<EOF
+apiVersion: eventing.knative.dev/v1
+kind: Broker
+metadata:
+ name: default
+EOF
+```
+
+### Create the Knative Services
 
 ```yaml
 apiVersion: serving.knative.dev/v1
@@ -73,10 +76,14 @@ spec:
           env:
             - name: MESSAGE
               value: " - Handled by 2"
-
+            - name: TYPE
+              value: "samples.http.mod3"
 ---
 
 ```
+
+Change the `default` namespace below to create the services in the namespace where you have
+configured your broker.
 
 ```shell
 kubectl -n default create -f ./steps.yaml
@@ -91,13 +98,13 @@ spec.channelTemplate to point to your desired Channel.
 Also, change the spec.reply.name to point to your `Broker`
 
 ```yaml
-apiVersion: flows.knative.dev/v1alpha1
+apiVersion: flows.knative.dev/v1
 kind: Sequence
 metadata:
   name: sequence
 spec:
   channelTemplate:
-    apiVersion: messaging.knative.dev/v1alpha1
+    apiVersion: messaging.knative.dev/v1
     kind: InMemoryChannel
   steps:
     - ref:
@@ -115,68 +122,66 @@ spec:
   reply:
     ref:
       kind: Broker
-      apiVersion: eventing.knative.dev/v1alpha1
+      apiVersion: eventing.knative.dev/v1
       name: default
 ```
 
-Change `default` below to create the `Sequence` in the Namespace where you have
-configured your `Broker`.
+Change the `default` namespace below to create the sequence in the namespace where you have
+configured your broker.
 
 ```shell
 kubectl -n default create -f ./sequence.yaml
 ```
 
-### Create the CronJobSource targeting the Broker
+### Create the PingSource targeting the Broker
 
-This will create a CronJobSource which will send a CloudEvent with {"message":
+This will create a PingSource which will send a CloudEvent with {"message":
 "Hello world!"} as the data payload every 2 minutes.
 
 ```yaml
-apiVersion: sources.eventing.knative.dev/v1alpha1
-kind: CronJobSource
+apiVersion: sources.knative.dev/v1beta2
+kind: PingSource
 metadata:
-  name: cronjob-source
+  name: ping-source
 spec:
   schedule: "*/2 * * * *"
+  contentType: "application/json"
   data: '{"message": "Hello world!"}'
   sink:
     ref:
-      apiVersion: eventing.knative.dev/v1alpha1
+      apiVersion: eventing.knative.dev/v1
       kind: Broker
       name: default
 ```
 
-Here, if you are using different type of Channel, you need to change the
-spec.channelTemplate to point to your desired Channel. Also, change the
-spec.reply.name to point to your `Broker`
-
-Change `default` below to create the `Sequence` in the Namespace where you have
-configured your `Broker`.
+Change the `default` namespace below to create the PingSource in the namespace where you have
+configured your broker and sequence.
 
 ```shell
-kubectl -n default create -f ./cron-source.yaml
+kubectl -n default create -f ./ping-source.yaml
 ```
 
 ### Create the Trigger targeting the Sequence
 
 ```yaml
-apiVersion: eventing.knative.dev/v1alpha1
+apiVersion: eventing.knative.dev/v1
 kind: Trigger
 metadata:
   name: sequence-trigger
 spec:
+  broker: default
   filter:
     attributes:
-      type: dev.knative.cronjob.event
+      type: dev.knative.sources.ping
   subscriber:
     ref:
-      apiVersion: flows.knative.dev/v1alpha1
+      apiVersion: flows.knative.dev/v1
       kind: Sequence
       name: sequence
 ```
 
-Change `default` below to create the `Sequence` in the Namespace where you have
-configured your `Broker`.
+Change the `default` namespace below to create the trigger in the namespace where you have
+configured your broker and sequence.
 
 ```shell
 kubectl -n default create -f ./trigger.yaml
@@ -196,11 +201,12 @@ spec:
       containers:
         - image: gcr.io/knative-releases/knative.dev/eventing-contrib/cmd/appender
 ---
-apiVersion: eventing.knative.dev/v1alpha1
+apiVersion: eventing.knative.dev/v1
 kind: Trigger
 metadata:
   name: display-trigger
 spec:
+  broker: default
   filter:
     attributes:
       type: samples.http.mod3
@@ -213,8 +219,8 @@ spec:
 
 ```
 
-Change `default` below to create the `Service` and `Trigger` in the Namespace
-where you have configured your `Broker`.
+Change `default` namespace below to create the service and trigger in the namespace
+where you have configured your broker.
 
 ```shell
 kubectl -n default create -f ./display-trigger.yaml
@@ -222,26 +228,30 @@ kubectl -n default create -f ./display-trigger.yaml
 
 ### Inspecting the results
 
-You can now see the final output by inspecting the logs of the event-display
+You can now see the final output by inspecting the logs of the sequence-display
 pods.
 
 ```shell
 kubectl -n default get pods
 ```
 
-Then look at the logs for the event-display pod:
+View the logs for the `sequence-display` pod:
 
 ```shell
-kubectl -n default logs --tail=50 -l serving.knative.dev/service=sequence-display -c user-container
+kubectl -n default logs -l serving.knative.dev/service=sequence-display -c user-container --tail=-1
 ☁️  cloudevents.Event
 Validation: valid
 Context Attributes,
-  cloudEventsVersion: 0.1
-  eventType: samples.http.mod3
-  source: /transformer/2
-  eventID: df52b47e-02fd-45b2-8180-dabb572573f5
-  eventTime: 2019-06-18T14:18:42.478140635Z
-  contentType: application/json
+  specversion: 1.0
+  type: samples.http.mod3
+  source: /apis/v1/namespaces/default/pingsources/ping-source
+  id: 159bba01-054a-4ae7-b7be-d4e7c5f773d2
+  time: 2020-03-03T14:56:00.000652027Z
+  datacontenttype: application/json
+Extensions,
+  knativearrivaltime: 2020-03-03T14:56:00.018390608Z
+  knativehistory: default-kne-trigger-kn-channel.default.svc.cluster.local; sequence-kn-sequence-0-kn-channel.default.svc.cluster.local; sequence-kn-sequence-1-kn-channel.default.svc.cluster.local; sequence-kn-sequence-2-kn-channel.default.svc.cluster.local; default-kne-trigger-kn-channel.default.svc.cluster.local
+  traceparent: 00-e893412106ff417a90a5695e53ffd9cc-5829ae45a14ed462-00
 Data,
   {
     "id": 0,
@@ -249,5 +259,5 @@ Data,
   }
 ```
 
-And you can see that the initial Cron Source message ("Hello World!") has been
+And you can see that the initial PingSource message `{"Hello World!"}` has been
 appended to it by each of the steps in the Sequence.
